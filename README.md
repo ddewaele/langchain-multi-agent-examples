@@ -9,22 +9,22 @@ A **demonstrator project** comparing four different multi-agent architectures in
 All backends use **LangChain.js v1+** (`langchain@1.2.x`, `@langchain/core@1.1.x`, `@langchain/langgraph@1.2.x`). No pre-v1 dependencies.
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      deepagents                              │
-│  createDeepAgent() = createAgent() + batteries-included      │
-│  (subagent middleware, planning, filesystem, summarization)   │
-├─────────────────────────────────────────────────────────────┤
-│                       langchain                              │
-│  createAgent() = high-level ReAct agent (builds a            │
-│  LangGraph StateGraph internally, you never see it)          │
-├─────────────────────────────────────────────────────────────┤
-│                  @langchain/langgraph                         │
-│  StateGraph, nodes, edges, conditional routing               │
-│  (you build the graph yourself, maximum control)             │
-├─────────────────────────────────────────────────────────────┤
-│                    @langchain/core                            │
-│  Messages, tools, models, runnables (shared foundation)      │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ deepagents                                               │
+│ createDeepAgent() = createAgent() + batteries-included   │
+│ (subagent middleware, planning, filesystem, summarize)    │
+├──────────────────────────────────────────────────────────┤
+│ langchain                                                │
+│ createAgent() = high-level ReAct agent (builds a         │
+│ LangGraph StateGraph internally, you never see it)       │
+├──────────────────────────────────────────────────────────┤
+│ @langchain/langgraph                                     │
+│ StateGraph, nodes, edges, conditional routing            │
+│ (you build the graph yourself, maximum control)          │
+├──────────────────────────────────────────────────────────┤
+│ @langchain/core                                          │
+│ Messages, tools, models, runnables (shared foundation)   │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ## Four Backends
@@ -38,17 +38,17 @@ All backends use **LangChain.js v1+** (`langchain@1.2.x`, `@langchain/core@1.1.x
 | [`webapp/`](./webapp/) | 5173 | **React frontend** — Streaming chat UI with backend selector | [Details](./webapp/README.md) |
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                       React Webapp (Vite + TS)                           │
-│                  Backend selector in header to switch                     │
-└──┬──────────────┬───────────────┬───────────────┬────────────────────────┘
-   │ :3001        │ :3002         │ :3003         │ :3004
-┌──▼──────┐  ┌────▼──────┐  ┌────▼──────┐  ┌─────▼──────────────────┐
-│LangGraph│  │createAgent│  │createAgent│  │ createDeepAgent (full) │
-│StateGraph│  │agents-as- │  │+deepagents│  │ planning + filesystem  │
-│supervisor│  │tools      │  │SubAgent   │  │ 4 subagents + memory   │
-│+tool loop│  │pattern    │  │middleware │  │ summarization + persist │
-└─────────┘  └───────────┘  └───────────┘  └────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│              React Webapp (Vite + TS)                        │
+│         Backend selector in header to switch                 │
+└───┬─────────────┬─────────────┬─────────────┬───────────────┘
+    │ :3001       │ :3002       │ :3003       │ :3004
+┌───▼───────┐ ┌───▼───────┐ ┌───▼───────┐ ┌───▼─────────────┐
+│ LangGraph │ │ createAg. │ │ createAg. │ │ createDeepAgent │
+│ StateGraph│ │ agents-as │ │ +deepagent│ │ planning + fs   │
+│ supervisor│ │ -tools    │ │ SubAgent  │ │ 4 subagents     │
+│ +toolloop │ │ pattern   │ │ middleware│ │ memory+persist  │
+└───────────┘ └───────────┘ └───────────┘ └─────────────────┘
 ```
 
 ## Quick Start
