@@ -4,6 +4,7 @@ export interface Message {
   content: string;
   agent?: string;
   toolCalls?: ToolCall[];
+  steps?: AgentStep[];
   reasoning?: string;
   timestamp: string;
   attachments?: Attachment[];
@@ -13,6 +14,21 @@ export interface ToolCall {
   name: string;
   args: Record<string, unknown>;
   result?: string;
+}
+
+/** An execution step in the agent pipeline (supervisor call, subagent call, tool call, etc.) */
+export interface AgentStep {
+  id: string;
+  type: "agent" | "tool" | "subagent";
+  name: string;
+  /** Agent that owns this step */
+  agent?: string;
+  args?: Record<string, unknown>;
+  result?: string;
+  /** Nested steps (e.g., subagent's own tool calls) */
+  children?: AgentStep[];
+  status: "running" | "done" | "error";
+  timestamp: string;
 }
 
 export interface Attachment {

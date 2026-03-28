@@ -11,6 +11,7 @@ const badgeColors: Record<BackendId, string> = {
   langgraph: "#8b5cf6",
   "langchain-agents": "#3b82f6",
   "deep-agents": "#10b981",
+  "deep-agents-showcase": "#f59e0b",
 };
 
 export function BackendSelector({ selected, onChange }: Props) {

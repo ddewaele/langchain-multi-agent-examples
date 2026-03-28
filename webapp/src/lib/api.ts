@@ -1,6 +1,6 @@
 import type { Thread } from "../types";
 
-export type BackendId = "langgraph" | "langchain-agents" | "deep-agents";
+export type BackendId = "langgraph" | "langchain-agents" | "deep-agents" | "deep-agents-showcase";
 
 export interface BackendConfig {
   id: BackendId;
@@ -25,8 +25,14 @@ export const BACKENDS: BackendConfig[] = [
   {
     id: "deep-agents",
     name: "Deep Agents",
-    description: "createDeepAgent with subagents, planning & filesystem",
+    description: "createAgent + deepagents SubAgent middleware",
     port: 3003,
+  },
+  {
+    id: "deep-agents-showcase",
+    name: "Deep Agents Showcase",
+    description: "Full createDeepAgent: planning, filesystem, 4 subagents, persistence",
+    port: 3004,
   },
 ];
 

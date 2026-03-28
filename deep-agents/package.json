@@ -20,7 +20,10 @@
     "express": "^4.21.0",
     "langchain": "^1.2.37",
     "uuid": "^10.0.0",
-    "zod": "^3.23.0"
+    "zod": "3.25.49"
+  },
+  "overrides": {
+    "zod": "3.25.49"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

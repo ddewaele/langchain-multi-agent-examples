@@ -67,7 +67,7 @@ function App() {
 
         <div className="chat-messages">
           {messages.length === 0 ? (
-            <WelcomeScreen onSuggestion={handleSuggestion} />
+            <WelcomeScreen onSuggestion={handleSuggestion} backend={backend} />
           ) : (
             <>
               {messages.map((msg) => (

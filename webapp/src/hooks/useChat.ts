@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from "react";
 import { v4 as uuidv4 } from "uuid";
-import type { Message, ToolCall } from "../types";
+import type { Message, ToolCall, AgentStep } from "../types";
 import { streamRun, createThread, type BackendId } from "../lib/api";
 
 export function useChat(backend: BackendId) {
@@ -21,11 +21,8 @@ export function useChat(backend: BackendId) {
       }
 
       const userMessage: Message = {
-        id: uuidv4(),
-        role: "user",
-        content,
-        timestamp: new Date().toISOString(),
-        attachments,
+        id: uuidv4(), role: "user", content,
+        timestamp: new Date().toISOString(), attachments,
       };
       setMessages((prev) => [...prev, userMessage]);
       setIsStreaming(true);
@@ -35,13 +32,26 @@ export function useChat(backend: BackendId) {
       const assistantId = uuidv4();
       setMessages((prev) => [
         ...prev,
-        { id: assistantId, role: "assistant", content: "", timestamp: new Date().toISOString(), toolCalls: [] },
+        { id: assistantId, role: "assistant", content: "", timestamp: new Date().toISOString(), toolCalls: [], steps: [] },
       ]);
 
       let reasoning = "";
       let streamedContent = "";
       let agent = "";
       const toolCalls: ToolCall[] = [];
+      const steps: AgentStep[] = [];
+      // Track current subagent step for nesting child tool calls
+      let currentSubagentStep: AgentStep | null = null;
+
+      const updateMessage = () => {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId
+              ? { ...m, content: streamedContent, agent, reasoning, toolCalls: [...toolCalls], steps: [...steps] }
+              : m
+          )
+        );
+      };
 
       controllerRef.current = streamRun(
         backend,
@@ -56,6 +66,7 @@ export function useChat(backend: BackendId) {
               const node = data.node as string;
               setActiveAgent(node);
 
+              // Extract supervisor reasoning
               if (node === "supervisor" && data.data?.messages) {
                 for (const msg of data.data.messages) {
                   if (msg.content) {
@@ -67,6 +78,7 @@ export function useChat(backend: BackendId) {
                 }
               }
 
+              // Track tool calls from updates
               if (data.data?.messages) {
                 for (const msg of data.data.messages) {
                   if (msg.toolCalls?.length) {
@@ -78,6 +90,7 @@ export function useChat(backend: BackendId) {
                   }
                 }
               }
+              updateMessage();
               break;
             }
 
@@ -90,11 +103,65 @@ export function useChat(backend: BackendId) {
                 }
               }
               agent = data.agent || agent;
+              updateMessage();
+              break;
+            }
+
+            case "step": {
+              // Subagent execution step from langchain-agents backend
+              const stepType = data.type as string;
+              const stepAgent = data.agent as string;
+
+              if (stepType === "subagent_start") {
+                currentSubagentStep = {
+                  id: uuidv4(),
+                  type: "subagent",
+                  name: stepAgent,
+                  agent: stepAgent,
+                  children: [],
+                  status: "running",
+                  timestamp: new Date().toISOString(),
+                };
+                steps.push(currentSubagentStep);
+                agent = stepAgent;
+                setActiveAgent(stepAgent);
+              } else if (stepType === "subagent_tool" && currentSubagentStep) {
+                const childStep: AgentStep = {
+                  id: uuidv4(),
+                  type: "tool",
+                  name: data.toolName || "tool",
+                  agent: stepAgent,
+                  args: data.toolArgs,
+                  status: "running",
+                  timestamp: new Date().toISOString(),
+                };
+                currentSubagentStep.children = currentSubagentStep.children || [];
+                currentSubagentStep.children.push(childStep);
+                setActiveTools((prev) => [...prev, { name: data.toolName, args: data.toolArgs || {} }]);
+              } else if (stepType === "subagent_tool_result" && currentSubagentStep?.children?.length) {
+                // Find the last running tool and mark it done
+                const lastChild = [...currentSubagentStep.children].reverse().find((c) => c.status === "running");
+                if (lastChild) {
+                  lastChild.result = data.toolResult;
+                  lastChild.status = "done";
+                }
+              } else if (stepType === "subagent_done") {
+                if (currentSubagentStep) {
+                  currentSubagentStep.status = "done";
+                  currentSubagentStep.result = data.content;
+                  currentSubagentStep = null;
+                }
+                // Use the subagent's final response as the message content,
+                // replacing any raw token stream that included tool results
+                if (data.content) {
+                  streamedContent = data.content;
+                }
+              }
+              updateMessage();
               break;
             }
 
             case "tool_result": {
-              // Specialist response via tool result
               if (data.content && data.agent) {
                 agent = data.agent;
               }
@@ -104,33 +171,26 @@ export function useChat(backend: BackendId) {
             case "token": {
               const tokenContent = data.content as string;
               const tokenNode = data.node as string;
-              if (tokenNode === "supervisor") break;
+              // Skip supervisor tokens (routing JSON) and tool node tokens (raw results)
+              if (tokenNode === "supervisor" || tokenNode === "tools") break;
               if (tokenNode) agent = tokenNode;
               streamedContent += tokenContent;
-
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === assistantId
-                    ? { ...m, content: streamedContent, agent, reasoning, toolCalls: [...toolCalls] }
-                    : m
-                )
-              );
+              updateMessage();
               break;
             }
 
             case "messages": {
               if (data.content && data.role === "assistant") {
                 agent = data.agent || agent;
+                // Only use if we don't already have subagent content
                 if (!streamedContent) {
                   streamedContent = data.content;
-                  setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === assistantId
-                        ? { ...m, content: streamedContent, agent, reasoning, toolCalls: [...toolCalls] }
-                        : m
-                    )
-                  );
                 }
+                // If the server's final message is longer/better, prefer it
+                if (data.content.length > streamedContent.length) {
+                  streamedContent = data.content;
+                }
+                updateMessage();
               }
               break;
             }
@@ -144,9 +204,6 @@ export function useChat(backend: BackendId) {
                 )
               );
               break;
-
-            case "end":
-              break;
           }
         },
         () => {
@@ -156,7 +213,7 @@ export function useChat(backend: BackendId) {
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantId
-                ? { ...m, content: streamedContent || m.content || "I processed your request.", agent, reasoning, toolCalls: [...toolCalls] }
+                ? { ...m, content: streamedContent || m.content || "I processed your request.", agent, reasoning, toolCalls: [...toolCalls], steps: [...steps] }
                 : m
             )
           );
@@ -204,15 +261,7 @@ export function useChat(backend: BackendId) {
   }, []);
 
   return {
-    messages,
-    isStreaming,
-    activeAgent,
-    activeTools,
-    threadId,
-    sendMessage,
-    stopStreaming,
-    clearMessages,
-    loadThread,
-    setThreadId,
+    messages, isStreaming, activeAgent, activeTools, threadId,
+    sendMessage, stopStreaming, clearMessages, loadThread, setThreadId,
   };
 }

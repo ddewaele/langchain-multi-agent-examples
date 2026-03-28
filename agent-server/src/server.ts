@@ -121,43 +121,67 @@ app.post("/api/threads/:threadId/runs/stream", async (req, res) => {
 
     let lastSpecialistContent = "";
     let lastSpecialistAgent = "";
+    let currentSubagent: string | null = null;
 
     for await (const chunk of stream) {
-      // With multiple stream modes, each chunk is [mode, data]
       const [mode, data] = chunk as [string, any];
 
       if (mode === "updates") {
-        // data is { nodeName: stateUpdate }
         for (const [nodeName, update] of Object.entries(data)) {
           const upd = update as Record<string, unknown>;
-
-          // Serialize and send node update
           const serialized = serializeNodeUpdate(nodeName, upd);
           sendEvent("updates", serialized);
 
-          // Extract text content from specialist node responses
+          // Emit step events for the rich execution timeline
+          const isSpecialist = ["researcher", "coder", "creative"].includes(nodeName);
+          const isToolNode = nodeName.endsWith("_tools");
+
+          if (isSpecialist && !currentSubagent) {
+            currentSubagent = nodeName;
+            sendEvent("step", { type: "subagent_start", agent: nodeName });
+          }
+
           if (upd.messages && Array.isArray(upd.messages)) {
             for (const msg of upd.messages) {
-              if (msg instanceof AIMessage) {
-                const textContent = extractTextContent(msg.content);
-                const hasToolCalls = msg.tool_calls && msg.tool_calls.length > 0;
+              const msgType = (msg as any)?._getType?.();
+              const toolCalls = (msg as any)?.tool_calls;
+              const textContent = extractTextContent((msg as any).content);
 
-                // Only treat as final content if there are no pending tool calls
-                if (textContent && !hasToolCalls) {
+              // AI message with tool calls from specialist
+              if ((msgType === "ai" || msgType === "AIMessageChunk") && toolCalls?.length) {
+                for (const tc of toolCalls) {
+                  sendEvent("step", {
+                    type: "subagent_tool",
+                    agent: currentSubagent || nodeName,
+                    toolName: tc.name,
+                    toolArgs: tc.args,
+                  });
+                }
+                sendEvent("tool_calls", {
+                  agent: nodeName,
+                  calls: toolCalls.map((tc: any) => ({ name: tc.name, args: tc.args, id: tc.id })),
+                });
+              }
+
+              // Tool result message
+              if (msgType === "tool" && currentSubagent) {
+                sendEvent("step", {
+                  type: "subagent_tool_result",
+                  agent: currentSubagent,
+                  toolName: (msg as any).name || "tool",
+                  toolResult: textContent.slice(0, 500),
+                });
+              }
+
+              // Final AI response (no tool calls)
+              if ((msgType === "ai" || msgType === "AIMessageChunk") && !toolCalls?.length) {
+                if (textContent) {
                   lastSpecialistContent = textContent;
                   lastSpecialistAgent = nodeName;
                 }
-
-                // Send tool calls info
-                if (hasToolCalls) {
-                  sendEvent("tool_calls", {
-                    agent: nodeName,
-                    calls: msg.tool_calls!.map((tc: any) => ({
-                      name: tc.name,
-                      args: tc.args,
-                      id: tc.id,
-                    })),
-                  });
+                if (currentSubagent && isSpecialist) {
+                  sendEvent("step", { type: "subagent_done", agent: currentSubagent, content: textContent });
+                  currentSubagent = null;
                 }
               }
             }

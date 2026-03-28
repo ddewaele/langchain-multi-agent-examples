@@ -1,15 +1,18 @@
-import { createDeepAgent } from "deepagents";
-import type { SubAgent } from "deepagents";
+import { createAgent } from "langchain";
+import {
+  createSubAgentMiddleware,
+  createPatchToolCallsMiddleware,
+  type SubAgent,
+} from "deepagents";
 import { researchTools, codeTools, creativeTools, allTools } from "./tools.js";
 
 /**
- * Multi-agent supervisor using deepagents `createDeepAgent`.
+ * Multi-agent supervisor using deepagents subagent middleware on top of
+ * LangChain's createAgent.
  *
- * Architecture: A parent deep agent with three specialist subagents.
- * The built-in `task` tool automatically handles delegation.
- *
- * Deep Agents add planning (write_todos), filesystem, summarization,
- * and subagent spawning on top of LangGraph — batteries included.
+ * We use createAgent (not createDeepAgent) to avoid the Zod v3/v4
+ * incompatibility in the filesystem middleware, but we still get the
+ * deep agents features we want: subagent delegation and tool call patching.
  */
 
 const MODEL = process.env.LLM_MODEL || "anthropic:claude-sonnet-4-20250514";
@@ -18,21 +21,21 @@ const MODEL = process.env.LLM_MODEL || "anthropic:claude-sonnet-4-20250514";
 
 const researchSubAgent: SubAgent = {
   name: "researcher",
-  description: "Research specialist for factual questions, web search, information gathering, data analysis, and current events. Use this agent when you need to find information or answer factual questions.",
+  description: "Research specialist for factual questions, web search, information gathering, data analysis, and current events.",
   systemPrompt: `You are a Research specialist. You excel at:
 - Finding and synthesizing information
 - Answering factual questions accurately
 - Providing well-sourced, comprehensive answers
 
 Use your tools to search for current information when needed.
-Always provide thorough, well-structured answers with clear explanations.`,
+IMPORTANT: Limit yourself to a maximum of 2-3 tool calls per request. Do NOT keep searching repeatedly — gather what you need quickly, then synthesize a thorough answer from what you have.`,
   tools: researchTools as any,
   model: MODEL,
 };
 
 const coderSubAgent: SubAgent = {
   name: "coder",
-  description: "Code specialist for writing code, debugging, code review, technical explanations, architecture decisions, and programming tasks. Use this agent for anything code-related.",
+  description: "Code specialist for writing code, debugging, code review, technical explanations, and programming tasks.",
   systemPrompt: `You are a Code specialist. You excel at:
 - Writing clean, efficient, well-documented code
 - Debugging and fixing issues
@@ -48,7 +51,7 @@ Only use tools to look up documentation or calculate something.`,
 
 const creativeSubAgent: SubAgent = {
   name: "creative",
-  description: "Creative specialist for writing, brainstorming, content creation, copywriting, storytelling, and creative tasks. Use this agent for any writing or creative work.",
+  description: "Creative specialist for writing, brainstorming, content creation, copywriting, and creative tasks.",
   systemPrompt: `You are a Creative specialist. You excel at:
 - Writing compelling content (articles, stories, copy)
 - Brainstorming and ideation
@@ -60,13 +63,23 @@ Create engaging, well-structured content that matches the requested style.`,
   model: MODEL,
 };
 
-// ── Deep Agent (Supervisor) ──
+// ── Build agent with deepagents middleware (no filesystem) ──
 
-export const agent: any = createDeepAgent({
+const subAgentMiddleware = createSubAgentMiddleware({
+  defaultModel: MODEL,
+  defaultTools: allTools as any,
+  subagents: [researchSubAgent, coderSubAgent, creativeSubAgent],
+});
+
+const patchMiddleware = createPatchToolCallsMiddleware();
+
+// NOTE: Do NOT pass `tools` to createAgent — the subAgentMiddleware injects
+// the `task` tool automatically. Passing tools here would duplicate them
+// (Anthropic API rejects duplicate tool names).
+export const agent = createAgent({
   name: "deep_supervisor",
   model: MODEL,
-  tools: allTools as any,
-  subagents: [researchSubAgent, coderSubAgent, creativeSubAgent],
+  middleware: [subAgentMiddleware, patchMiddleware] as any,
   systemPrompt: `You are a Supervisor agent that coordinates a team of specialists.
 
 Your team (available via the task tool):

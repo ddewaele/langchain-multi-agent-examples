@@ -1,19 +1,52 @@
 import { createAgent, tool } from "langchain";
 import { z } from "zod";
 import { researchTools, codeTools, creativeTools } from "./tools.js";
+import type { EventEmitter } from "events";
 
 /**
  * Multi-agent supervisor using LangChain.js `createAgent`.
- *
- * Architecture: Supervisor (createAgent) with three specialist subagents
- * wrapped as tools. The supervisor decides which specialist to invoke
- * and synthesizes the final response.
- *
- * This is the "agents-as-tools" pattern — NO manual LangGraph graph
- * construction. Each createAgent call builds an internal ReAct graph.
+ * Agents-as-tools pattern with subagent step streaming.
  */
 
 const MODEL = process.env.LLM_MODEL || "anthropic:claude-sonnet-4-20250514";
+
+// ── Event bus for streaming subagent internals to the server ──
+
+type StepListener = (step: {
+  type: "subagent_start" | "subagent_tool" | "subagent_tool_result" | "subagent_done";
+  agent: string;
+  toolName?: string;
+  toolArgs?: Record<string, unknown>;
+  toolResult?: string;
+  content?: string;
+}) => void;
+
+let stepListener: StepListener | null = null;
+
+export function onStep(listener: StepListener) {
+  stepListener = listener;
+}
+
+export function clearStepListener() {
+  stepListener = null;
+}
+
+function emitStep(step: Parameters<StepListener>[0]) {
+  stepListener?.(step);
+}
+
+// ── Helpers ──
+
+function extractText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((b: any) => b.type === "text")
+      .map((b: any) => b.text)
+      .join("");
+  }
+  return JSON.stringify(content);
+}
 
 // ── Specialist Agents ──
 
@@ -27,7 +60,7 @@ const researchAgent = createAgent({
 - Providing well-sourced, comprehensive answers
 
 Use your tools to search for current information when needed.
-Always provide thorough, well-structured answers with clear explanations.`,
+IMPORTANT: Limit yourself to a maximum of 2-3 tool calls per request. Do NOT keep searching repeatedly — gather what you need quickly, then synthesize a thorough answer from what you have.`,
 });
 
 const coderAgent = createAgent({
@@ -58,67 +91,90 @@ const creativeAgent = createAgent({
 Create engaging, well-structured content that matches the requested style.`,
 });
 
-// ── Subagent Tool Wrappers ──
+// ── Subagent wrappers that stream internal steps ──
 
-function extractText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .filter((b: any) => b.type === "text")
-      .map((b: any) => b.text)
-      .join("");
+async function runSubagentWithSteps(
+  agent: ReturnType<typeof createAgent>,
+  agentName: string,
+  task: string
+): Promise<string> {
+  emitStep({ type: "subagent_start", agent: agentName });
+
+  let finalContent = "";
+
+  // Stream the subagent to capture its internal tool calls
+  const stream = await agent.stream(
+    { messages: [{ role: "user", content: task }] },
+    { streamMode: "updates" as any, recursionLimit: 20 }
+  );
+
+  for await (const chunk of stream) {
+    for (const [nodeName, update] of Object.entries(chunk as Record<string, any>)) {
+      if (update?.messages) {
+        for (const msg of update.messages) {
+          const msgType = msg?._getType?.();
+
+          // AI message with tool calls
+          if ((msgType === "ai" || msgType === "AIMessageChunk") && msg?.tool_calls?.length) {
+            for (const tc of msg.tool_calls) {
+              emitStep({
+                type: "subagent_tool",
+                agent: agentName,
+                toolName: tc.name,
+                toolArgs: tc.args,
+              });
+            }
+          }
+
+          // Tool result messages
+          if (msgType === "tool") {
+            const result = extractText(msg.content);
+            emitStep({
+              type: "subagent_tool_result",
+              agent: agentName,
+              toolName: msg.name || "tool",
+              toolResult: result.slice(0, 500),
+            });
+          }
+
+          // Final AI message (no tool calls)
+          if ((msgType === "ai" || msgType === "AIMessageChunk") && !msg?.tool_calls?.length) {
+            const text = extractText(msg.content);
+            if (text) finalContent = text;
+          }
+        }
+      }
+    }
   }
-  return JSON.stringify(content);
+
+  emitStep({ type: "subagent_done", agent: agentName, content: finalContent });
+  return finalContent || "Task complete.";
 }
 
 const callResearcher = tool(
-  async ({ task }) => {
-    const result = await researchAgent.invoke({
-      messages: [{ role: "user", content: task }],
-    });
-    const lastMsg = result.messages[result.messages.length - 1];
-    return extractText(lastMsg?.content) || "Research complete but no content returned.";
-  },
+  async ({ task }) => runSubagentWithSteps(researchAgent as any, "researcher", task),
   {
     name: "research",
     description: "Delegate to the Research specialist for factual questions, web search, information gathering, and data analysis",
-    schema: z.object({
-      task: z.string().describe("The research task or question to investigate"),
-    }),
+    schema: z.object({ task: z.string().describe("The research task or question") }),
   }
 );
 
 const callCoder = tool(
-  async ({ task }) => {
-    const result = await coderAgent.invoke({
-      messages: [{ role: "user", content: task }],
-    });
-    const lastMsg = result.messages[result.messages.length - 1];
-    return extractText(lastMsg?.content) || "Code task complete but no content returned.";
-  },
+  async ({ task }) => runSubagentWithSteps(coderAgent as any, "coder", task),
   {
     name: "code",
-    description: "Delegate to the Code specialist for writing code, debugging, code review, technical explanations, and programming tasks",
-    schema: z.object({
-      task: z.string().describe("The coding task or question"),
-    }),
+    description: "Delegate to the Code specialist for writing code, debugging, code review, technical explanations",
+    schema: z.object({ task: z.string().describe("The coding task or question") }),
   }
 );
 
 const callCreative = tool(
-  async ({ task }) => {
-    const result = await creativeAgent.invoke({
-      messages: [{ role: "user", content: task }],
-    });
-    const lastMsg = result.messages[result.messages.length - 1];
-    return extractText(lastMsg?.content) || "Creative task complete but no content returned.";
-  },
+  async ({ task }) => runSubagentWithSteps(creativeAgent as any, "creative", task),
   {
     name: "creative",
-    description: "Delegate to the Creative specialist for writing, brainstorming, content creation, copywriting, and creative tasks",
-    schema: z.object({
-      task: z.string().describe("The creative task or writing request"),
-    }),
+    description: "Delegate to the Creative specialist for writing, brainstorming, content creation",
+    schema: z.object({ task: z.string().describe("The creative task or writing request") }),
   }
 );
 
@@ -143,5 +199,3 @@ How to work:
 For simple greetings or meta-questions, respond directly without delegating.
 When the specialist returns a complete answer, present it as-is (don't summarize away important details like code blocks).`,
 });
-
-export { researchAgent, coderAgent, creativeAgent };

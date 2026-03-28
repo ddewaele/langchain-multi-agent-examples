@@ -6,11 +6,14 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // LangGraph.js backend (port 3001)
-      "/api-langgraph": {
-        target: "http://localhost:3001",
+      // Order matters! Longer prefixes must come first to avoid
+      // /api-deep-agents matching /api-deep-agents-showcase requests.
+
+      // Deep Agents Showcase (port 3004) — MUST be before /api-deep-agents
+      "/api-deep-agents-showcase": {
+        target: "http://localhost:3004",
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api-langgraph/, "/api"),
+        rewrite: (path) => path.replace(/^\/api-deep-agents-showcase/, "/api"),
       },
       // LangChain createAgent backend (port 3002)
       "/api-langchain-agents": {
@@ -23,6 +26,12 @@ export default defineConfig({
         target: "http://localhost:3003",
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api-deep-agents/, "/api"),
+      },
+      // LangGraph.js backend (port 3001)
+      "/api-langgraph": {
+        target: "http://localhost:3001",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api-langgraph/, "/api"),
       },
     },
   },
